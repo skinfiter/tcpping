@@ -2,6 +2,11 @@
   TCP Ping
   Sequentially creates tcp connections to the specified host and measures the latency.
   Author: Alexander Tarasov aka oioki
+  Change:20190430
+    1. like ping output.
+	2. quite mode
+	3. help info
+    Author: skinfiter
 ***************************************************************************************************/
 
 #include <stdio.h>
@@ -20,7 +25,10 @@
 
 
 // I use it mostly for remote servers
-#define DEFAULT_PORT 22
+#define DEFAULT_PORT 80
+#define DEFAULT_COUNT 30
+#define DEFAULT_INTEVAL 1
+#define QUIET 1
 
 
 // return time period between t1 and t2 (in milliseconds)
@@ -45,16 +53,17 @@ unsigned long int diffMdev;
 struct sockaddr_in addrServer;
 
 int running = 1;
+int quiet = 0;
 
 
 // one ping
-int ping(char * ip, int port)
+int ping(char * ip, int port,float inteval)
 {
     seq++;
 
     // creating new socket for each new ping
     int sfdInet = socket(PF_INET, SOCK_STREAM, 0);
-    if ( sfdInet == -1 )
+    if ( sfdInet == -1)
     {
         fprintf(stderr, "Failed to create INET socket, error %d\n", errno);
         return 1;
@@ -101,7 +110,7 @@ int ping(char * ip, int port)
         }
 
         // sleeping 1 sec until the next ping
-        sleep(1);
+   //     sleep(1);
 
         return 1;
     }
@@ -110,7 +119,9 @@ int ping(char * ip, int port)
     gettimeofday(&tvEnd, NULL);
     long int diff = timeval_subtract(&tvEnd, &tvBegin);
     int secs = diff / 1000000;
-    printf("  OK   Connected to %s:%d, seq=%d, time=%0.3lf ms\n", ip, port, seq, diff/1000.);
+    if ( quiet != QUIET ){
+        printf("  OK   Connected to %s:%d, seq=%d, time=%0.3lf ms\n", ip, port, seq, diff/1000.);
+    }
     cnt_successful++;
 
     // changing aggregate stats
@@ -125,7 +136,7 @@ int ping(char * ip, int port)
     // sleeping until the beginning of the next second
     struct timespec ts;
     ts.tv_sec  = 0;
-    ts.tv_nsec = 1000 * ( 1000000*(1+secs) - diff );
+    ts.tv_nsec = 1000 * 1000000*(inteval+secs) - 1000 * diff ;
     nanosleep(&ts, &ts);
 
     return 0;
@@ -136,15 +147,38 @@ void intHandler()
     running = 0;
 }
 
+void usage(char * name){
+    printf("Usage: %s hostname [-p] [-c] [-i] [-q] [-h] [-v]\n", name);
+    printf("\t-p port\n\t-c count\n\t-i inteval\n\t-q quiet\n\t-h show help\n\t-v show version\n");
+}
+
 int main(int argc, char * argv[])
 {
     if ( argc == 1 )
     {
-        printf("Usage: %s hostname [port]\n", argv[0]);
+	usage(argv[0]);
         return 1;
     }
+    extern char *optarg;
     char * host = argv[1];
-    int port = (argc==2) ? DEFAULT_PORT : atoi(argv[2]);
+    int port = DEFAULT_PORT;
+    int count = DEFAULT_COUNT;
+    float inteval = DEFAULT_INTEVAL;
+    int opt=0;
+    while((opt=getopt(argc,argv,"p:c:i:qhv"))!=-1){
+        switch(opt){
+          case 'p': port=atoi(optarg);continue;
+          case 'c': count=atoi(optarg);continue;
+          case 'i': inteval=atof(optarg);continue;
+          case 'q': quiet=1;continue;
+          case 'v': printf("Version:20190412\n");return 0;
+          case 'h': usage(argv[0]);return 0;
+          default: usage(argv[0]);return 0;
+        }
+    }
+
+    //printf("%s %d %d %.2f %d\n",host,port,count,inteval,quiet);
+    //return 1;
 
     // resolving the hostname
     struct hostent * he;
@@ -155,7 +189,6 @@ int main(int argc, char * argv[])
         fprintf(stderr, "tcpping: unknown host %s (error %d)\n", host, h_errno);
         return 1;
     }
-
     // filling up `sockaddr_in` structure
     memset(&addrServer, 0, sizeof(struct sockaddr_in));
     addrServer.sin_family = AF_INET;
@@ -166,7 +199,6 @@ int main(int argc, char * argv[])
     struct in_addr ** addr_list = (struct in_addr **) he->h_addr_list;
     char ip[16];
     strcpy(ip, inet_ntoa(*addr_list[0]));
-
     // Ctrl+C handler
     signal(SIGINT, intHandler);
 
@@ -176,22 +208,36 @@ int main(int argc, char * argv[])
 
 
     // main loop
-    while (running) ping(ip, port);
-
+    int i = 0;
+    while (running == 1 && i < count){
+        ping(ip, port,inteval);
+        i++;
+    }
 
     // note the ending time and calculate the duration of TCP ping
     gettimeofday(&tvEnd, NULL);
     long int diff = timeval_subtract(&tvEnd, &tvBegin);
 
     // summary
-    printf ("\n--- %s tcpping statistics ---\n", host);
-    printf ("%d packets transmitted, %d received, %d%% packet loss, time %ldms\n", seq, cnt_successful, 100-100*cnt_successful/seq, diff/1000);
-    if ( cnt_successful > 0 )
+    if ( quiet == QUIET )
     {
+//        printf("%d\n",cnt_successful);
+        if ( cnt_successful > 0 ){
+            diffAvg  = diffSum/cnt_successful;
+            diffMdev = sqrt( diffSum2/cnt_successful - diffAvg*diffAvg );
+            printf("%s|%s|%d %d %d%%|%.3lf %.3lf %.3lf %.3lf",host,ip,seq,cnt_successful,100-100*cnt_successful/seq,diffMin/1000.,diffAvg/1000.,diffMax/1000.,diffMdev/1000.);
+        }else{
+            printf("%s|%s|%d %d %d%%|",host,ip,seq,cnt_successful,100-100*cnt_successful/seq);
+        }
+    }else{
+      printf ("\n--- %s tcpping statistics ---\n", host);
+      printf ("%d packets transmitted, %d received, %d%% packet loss, time %ldms\n", seq, cnt_successful, 100-100*cnt_successful/seq, diff/1000);
+      if ( cnt_successful > 0 )
+      {
         diffAvg  = diffSum/cnt_successful;
         diffMdev = sqrt( diffSum2/cnt_successful - diffAvg*diffAvg );
         printf ("rtt min/avg/max/mdev = %0.3lf/%0.3lf/%0.3lf/%0.3lf ms\n", diffMin/1000.,diffAvg/1000.,diffMax/1000.,diffMdev/1000.);
+      }
     }
-
     return 0;
 }
